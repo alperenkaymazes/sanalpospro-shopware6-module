@@ -1,0 +1,14 @@
+# Docker volumes
+db_volume/
+
+# PHP
+plugins/SanalPosPro/vendor/
+plugins/SanalPosPro/.phpunit.cache/
+
+# Node
+plugins/SanalPosPro/node_modules/
+plugins/SanalPosPro/src/Resources/app/storefront/dist/
+plugins/SanalPosPro/src/Resources/app/administration/dist/
+
+# OS
+.DS_Store
