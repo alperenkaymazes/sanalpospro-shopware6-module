@@ -1,17 +1,20 @@
 {
     "name": "sanalpospro-payment/sanal-pos-pro",
-    "description": "sanalpospro-payment/sanal-pos-pro",
+    "description": "Sanal Pos Pro Eklentisi",
     "type": "shopware-platform-plugin",
     "version": "1.0.0",
     "license": "MIT",
     "require": {
         "shopware/core": "~6.7.0"
     },
+    "require-dev": {
+        "phpunit/phpunit": "^12.5"
+    },
     "extra": {
         "shopware-plugin-class": "SanalposproPayment\\SanalPosPro",
         "label": {
-            "de-DE": "Skeleton plugin",
-            "en-GB": "Skeleton plugin"
+            "de-DE": "Sanal Pos Pro",
+            "en-GB": "Sanal Pos Pro"
         }
     },
     "autoload": {
@@ -22,6 +25,11 @@
     "autoload-dev": {
         "psr-4": {
             "SanalposproPayment\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "symfony/runtime": true
         }
     }
 }
