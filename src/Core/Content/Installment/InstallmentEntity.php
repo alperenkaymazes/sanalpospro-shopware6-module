@@ -5,19 +5,32 @@ namespace SanalposproPayment\Core\Content\Installment;
 use Shopware\Core\Framework\DataAbstractionLayer\Entity;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityIdTrait;
 
+/**
+ * Entity for `sanalpospro_installment`.
+ * Property names use camelCase mappings of Contract C snake_case columns.
+ */
 class InstallmentEntity extends Entity
 {
     use EntityIdTrait;
 
+    /** Issuing bank name (maps to bank_name column) */
     protected string $bankName;
 
+    /** Card type e.g. 'visa', 'mastercard' (maps to card_type column) */
     protected ?string $cardType = null;
 
+    /** Number of installments e.g. 3, 6, 9, 12 (maps to installment_count column) */
     protected int $installmentCount;
 
+    /** Interest / surcharge rate in percent (maps to interest_rate column) */
     protected float $interestRate = 0.00;
 
+    /** Whether this installment plan is currently active (maps to is_active column) */
     protected bool $isActive = true;
+
+    // -------------------------------------------------------------------------
+    // Getters & Setters
+    // -------------------------------------------------------------------------
 
     public function getBankName(): string
     {

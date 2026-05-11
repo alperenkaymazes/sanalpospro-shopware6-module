@@ -5,23 +5,38 @@ namespace SanalposproPayment\Core\Content\WebhookLog;
 use Shopware\Core\Framework\DataAbstractionLayer\Entity;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityIdTrait;
 
+/**
+ * Entity for `sanalpospro_webhook_log`.
+ * Property names use camelCase mappings of Contract C snake_case columns.
+ */
 class WebhookLogEntity extends Entity
 {
     use EntityIdTrait;
 
+    /** Shopware order_transaction.id (maps to order_tx_id column) */
     protected string $orderTxId;
 
+    /** PayThor gateway transaction_id (maps to paythor_tx_id column) */
     protected ?string $paythorTxId = null;
 
+    /** 'webhook' | 'callback' (maps to action column) */
     protected string $action;
 
+    /** 'success' | 'failed' | 'pending' | 'refunded' (maps to status column) */
     protected string $status;
 
+    /** Transaction amount (maps to amount column) */
     protected ?float $amount = null;
 
+    /** ISO 4217 currency code e.g. 'TRY' (maps to currency column) */
     protected ?string $currency = null;
 
+    /** Full raw JSON payload received (maps to raw_payload column) */
     protected ?string $rawPayload = null;
+
+    // -------------------------------------------------------------------------
+    // Getters & Setters
+    // -------------------------------------------------------------------------
 
     public function getOrderTxId(): string
     {
