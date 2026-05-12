@@ -83,6 +83,7 @@
 
         <!-- Dev 3: IAPI Internal Bridge Controller -->
         <service id="SanalposproPayment\Storefront\Controller\IapiController" public="true">
+            <argument type="service" id="Shopware\Core\System\SystemConfig\SystemConfigService"/>
             <call method="setContainer">
                 <argument type="service" id="service_container"/>
             </call>
