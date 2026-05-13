@@ -81,16 +81,28 @@ class IapiController extends StorefrontController
 
     private function actionCheckApiKeys(array $params): array
     {
-        $pub = (string) ($this->systemConfigService->get(self::CONFIG_PUBLIC_KEY) ?? '');
-        $sec = (string) ($this->systemConfigService->get(self::CONFIG_SECRET_KEY) ?? '');
-
-        if ($pub === '' || $sec === '') {
-            return $this->error('API keys not configured. Please enter your Public and Secret keys in the plugin settings.');
-        }
-
         $token = (string) ($params['iapi_accessToken'] ?? '');
         if ($token === '') {
             return $this->error('No access token provided.');
+        }
+
+        $pub = (string) ($this->systemConfigService->get(self::CONFIG_PUBLIC_KEY) ?? '');
+        $sec = (string) ($this->systemConfigService->get(self::CONFIG_SECRET_KEY) ?? '');
+
+        // First-time setup: API keys have never been fetched yet.
+        // Use the Bearer token (from OTP verification) to auto-fetch and persist them
+        // via GET /app/getapikeys/{appId} — mirroring Magento Workflows/Login.php:74.
+        if ($pub === '' || $sec === '') {
+            $fetchResult = $this->fetchAndSaveApiKeys($token);
+            if ($fetchResult['status'] !== 'success') {
+                return $fetchResult;
+            }
+            $pub = (string) ($this->systemConfigService->get(self::CONFIG_PUBLIC_KEY) ?? '');
+            $sec = (string) ($this->systemConfigService->get(self::CONFIG_SECRET_KEY) ?? '');
+        }
+
+        if ($pub === '' || $sec === '') {
+            return $this->error('API keys could not be retrieved automatically.');
         }
 
         try {
@@ -129,6 +141,16 @@ class IapiController extends StorefrontController
             $this->logger->warning('SanalPosPro: checkApiKeys failed', ['error' => $e->getMessage()]);
             return $this->error('Request failed: ' . $e->getMessage());
         }
+    }
+
+    private function actionFetchApiKeys(array $params): array
+    {
+        $token = (string) ($params['iapi_accessToken'] ?? '');
+        if ($token === '') {
+            return $this->error('No access token provided.');
+        }
+
+        return $this->fetchAndSaveApiKeys($token);
     }
 
     private function actionSaveApiKeys(array $params): array
@@ -216,6 +238,155 @@ class IapiController extends StorefrontController
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Full key-bootstrap sequence mirroring Magento Workflows/Login.php:56-83:
+     *   1. GET  /app/list/my          → find installed app record for app_id 106
+     *   2. POST /app/install/106      → install if not present yet
+     *   3. GET  /app/getapikeys/{id}  → {id} is the installed record ID, not 106
+     *   4. Persist public_key + secret_key into system_config
+     */
+    private function fetchAndSaveApiKeys(string $bearerToken): array
+    {
+        $bearerHeaders = [
+            'Authorization'  => 'Bearer ' . $bearerToken,
+            'ETC-PROGRAM-ID' => (string) self::PROGRAM_ID,
+            'ETC-APP-ID'     => (string) self::SHOPWARE_APP_ID_DEFAULT,
+            'Content-Type'   => 'application/json',
+        ];
+
+        try {
+            // Step 1: find the merchant's installed app record
+            [$myApp, $allApps] = $this->findMyApp($bearerHeaders);
+
+            $this->logger->info('SanalPosPro: listMyApps full', ['apps' => $allApps]);
+
+            // Step 2: not installed yet — install it now
+            if ($myApp === null) {
+                $this->logger->info('SanalPosPro: app not installed, installing now');
+
+                $installRaw = $this->httpClient->request(
+                    'POST',
+                    self::PAYTHOR_API_BASE . '/app/install/' . self::SHOPWARE_APP_ID_DEFAULT,
+                    [
+                        'headers' => $bearerHeaders,
+                        'json'    => [
+                            'install' => [
+                                'app_stage'  => 'production',
+                                'app_id'     => self::SHOPWARE_APP_ID_DEFAULT,
+                                'program_id' => self::PROGRAM_ID,
+                                'store_url'  => 'http://localhost',
+                            ],
+                        ],
+                        'timeout' => 10,
+                    ]
+                );
+
+                $installBody = $installRaw->getContent(false);
+                $installData = json_decode($installBody, true) ?? [];
+                $this->logger->info('SanalPosPro: install response', [
+                    'http'    => $installRaw->getStatusCode(),
+                    'body'    => substr($installBody, 0, 500),
+                    'status'  => $installData['status'] ?? 'unknown',
+                    'message' => $installData['message'] ?? '',
+                ]);
+
+                // Re-fetch after install attempt
+                [$myApp, $allApps] = $this->findMyApp($bearerHeaders);
+                $this->logger->info('SanalPosPro: listMyApps after install', ['apps' => $allApps]);
+            }
+
+            if ($myApp === null) {
+                $appSummary = array_map(fn($a) => ['id' => $a['id'] ?? '?', 'app_id' => $a['app_id'] ?? '?', 'name' => $a['name'] ?? '?'], $allApps);
+                return $this->error('App not found after install attempt. Available apps: ' . json_encode($appSummary));
+            }
+
+            // Step 3: get the API keys using the installed record's own ID
+            $installedId = (int) ($myApp['id'] ?? 0);
+            if ($installedId === 0) {
+                return $this->error('Installed app record has no id field. Record: ' . json_encode($myApp));
+            }
+
+            $keysResp = $this->httpClient->request(
+                'GET',
+                self::PAYTHOR_API_BASE . '/app/getapikeys/' . $installedId,
+                ['headers' => $bearerHeaders, 'timeout' => 10]
+            );
+
+            $rawBody  = $keysResp->getContent(false);
+            $httpCode = $keysResp->getStatusCode();
+            $this->logger->info('SanalPosPro: getApiKeys raw', ['http' => $httpCode, 'body' => substr($rawBody, 0, 500)]);
+
+            $data = json_decode($rawBody, true);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+                return $this->error('getApiKeys returned non-JSON (HTTP ' . $httpCode . '): ' . substr($rawBody, 0, 300));
+            }
+
+            if (($data['status'] ?? '') !== 'success') {
+                return $this->error('getApiKeys failed: ' . ($data['message'] ?? 'unknown error'));
+            }
+
+            $publicKey = (string) ($data['data']['public_key'] ?? '');
+            $secretKey = (string) ($data['data']['secret_key'] ?? '');
+
+            if ($publicKey === '' || $secretKey === '') {
+                return $this->error('getApiKeys response missing public_key or secret_key.');
+            }
+
+            // Step 4: persist
+            $this->systemConfigService->set(self::CONFIG_PUBLIC_KEY, $publicKey);
+            $this->systemConfigService->set(self::CONFIG_SECRET_KEY, $secretKey);
+
+            $this->logger->info('SanalPosPro: API keys auto-fetched and saved', ['installed_id' => $installedId]);
+
+            return $this->success('API keys retrieved and saved automatically.', ['public_key' => $publicKey]);
+
+        } catch (\Throwable $e) {
+            $this->logger->warning('SanalPosPro: fetchAndSaveApiKeys failed', ['error' => $e->getMessage()]);
+            return $this->error('Failed to fetch API keys: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * GET /app/list/my and return [matchedApp|null, allApps[]].
+     * Matches by app_id == SHOPWARE_APP_ID_DEFAULT, or falls back to any app
+     * whose name contains "shopware" or "swr".
+     *
+     * @return array{0: array|null, 1: array}
+     */
+    private function findMyApp(array $bearerHeaders): array
+    {
+        $response = $this->httpClient->request('GET', self::PAYTHOR_API_BASE . '/app/list/my', [
+            'headers' => $bearerHeaders,
+            'timeout' => 10,
+        ]);
+
+        $data = json_decode($response->getContent(false), true);
+        $this->logger->info('SanalPosPro: listMyApps', ['status' => $data['status'] ?? 'unknown']);
+
+        if (($data['status'] ?? '') !== 'success' || !is_array($data['data'] ?? null)) {
+            return [null, []];
+        }
+
+        $all = $data['data'];
+
+        // Primary match: exact app_id
+        foreach ($all as $app) {
+            if ((int) ($app['app_id'] ?? 0) === self::SHOPWARE_APP_ID_DEFAULT) {
+                return [$app, $all];
+            }
+        }
+
+        // Fallback: name contains "shopware" or "swr"
+        foreach ($all as $app) {
+            $name = strtolower((string) ($app['name'] ?? ''));
+            if (str_contains($name, 'shopware') || str_contains($name, 'swr')) {
+                return [$app, $all];
+            }
+        }
+
+        return [null, $all];
+    }
 
     private function savedAppId(): int
     {
