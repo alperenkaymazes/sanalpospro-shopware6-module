@@ -89,9 +89,7 @@ class IapiController extends StorefrontController
         $pub = (string) ($this->systemConfigService->get(self::CONFIG_PUBLIC_KEY) ?? '');
         $sec = (string) ($this->systemConfigService->get(self::CONFIG_SECRET_KEY) ?? '');
 
-        // First-time setup: API keys have never been fetched yet.
-        // Use the Bearer token (from OTP verification) to auto-fetch and persist them
-        // via GET /app/getapikeys/{appId} — mirroring Magento Workflows/Login.php:74.
+        // No keys yet (fresh install) → fetch them now using the Bearer token.
         if ($pub === '' || $sec === '') {
             $fetchResult = $this->fetchAndSaveApiKeys($token);
             if ($fetchResult['status'] !== 'success') {
@@ -105,6 +103,41 @@ class IapiController extends StorefrontController
             return $this->error('API keys could not be retrieved automatically.');
         }
 
+        $data = $this->callCheckAccessToken($token, $pub, $sec);
+
+        // "Merchant ID mismatch" means the stored keys belong to a DIFFERENT merchant
+        // than the one who just logged in (e.g. the store is being reconnected to a new
+        // PayThor account).  Clear the stale keys, re-fetch for the new merchant, retry.
+        if (
+            ($data['status'] ?? '') !== 'success'
+            && str_contains(strtolower((string) ($data['message'] ?? '')), 'mismatch')
+        ) {
+            $this->logger->info('SanalPosPro: merchant mismatch — clearing stale keys and re-fetching');
+            $this->systemConfigService->delete(self::CONFIG_PUBLIC_KEY);
+            $this->systemConfigService->delete(self::CONFIG_SECRET_KEY);
+            $this->systemConfigService->delete(self::CONFIG_APP_ID);
+
+            $fetchResult = $this->fetchAndSaveApiKeys($token);
+            if ($fetchResult['status'] !== 'success') {
+                return $fetchResult;
+            }
+
+            $pub  = (string) ($this->systemConfigService->get(self::CONFIG_PUBLIC_KEY) ?? '');
+            $sec  = (string) ($this->systemConfigService->get(self::CONFIG_SECRET_KEY) ?? '');
+            $data = $this->callCheckAccessToken($token, $pub, $sec);
+        }
+
+        $this->logger->info('SanalPosPro: checkApiKeys', ['status' => $data['status'] ?? 'unknown']);
+
+        if (($data['status'] ?? '') === 'success') {
+            $this->discoverAndSaveShopwareAppId($token, $pub, $sec);
+        }
+
+        return $data;
+    }
+
+    private function callCheckAccessToken(string $token, string $pub, string $sec): array
+    {
         try {
             [$hashTime, $hashRand, $hash] = $this->generateHash($pub, $sec);
 
@@ -121,19 +154,13 @@ class IapiController extends StorefrontController
                 'timeout' => 10,
             ]);
 
-            $rawBody = $response->getContent(false);
+            $rawBody  = $response->getContent(false);
             $httpCode = $response->getStatusCode();
             $this->logger->info('SanalPosPro: checkApiKeys raw', ['http' => $httpCode, 'body' => substr($rawBody, 0, 500)]);
 
             $data = json_decode($rawBody, true);
             if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
                 return $this->error('API returned non-JSON (HTTP ' . $httpCode . '): ' . substr($rawBody, 0, 300));
-            }
-
-            $this->logger->info('SanalPosPro: checkApiKeys', ['status' => $data['status'] ?? 'unknown']);
-
-            if (($data['status'] ?? '') === 'success') {
-                $this->discoverAndSaveShopwareAppId($token, $pub, $sec);
             }
 
             return $data;
